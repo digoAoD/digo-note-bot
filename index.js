@@ -5,6 +5,7 @@
 
 const {
   Client,
+  Events,
   GatewayIntentBits,
   SlashCommandBuilder,
   REST,
@@ -18,6 +19,10 @@ require("dotenv").config();
 
 const DATA_FILE = path.join(__dirname, "notes.json");
 const ALLOWED_GAMES_FILE = path.join(__dirname, "jeux-autorises.json");
+
+// ID utilisateur de Digo (optionnel mais recommandé) :
+// si défini dans .env, /publier et /autoriser-jeu sont réservés à Digo.
+const DIGO_ID = process.env.DIGO_ID || null;
 
 // ---------- Stockage ----------
 function loadData() {
@@ -47,6 +52,10 @@ function getAverage(gameData) {
   if (notes.length === 0) return null;
   const sum = notes.reduce((a, b) => a + b, 0);
   return sum / notes.length;
+}
+
+function formatVotes(nb) {
+  return `${nb} vote${nb > 1 ? "s" : ""}`;
 }
 
 // ---------- Commandes ----------
@@ -120,11 +129,11 @@ const commands = [
 // ---------- Client ----------
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-client.once("ready", () => {
-  console.log(`Connecté en tant que ${client.user.tag}`);
+client.once(Events.ClientReady, () => {
+  console.log(`Connecté en tant que ${client.user.username}`);
 });
 
-client.on("interactionCreate", async (interaction) => {
+client.on(Events.InteractionCreate, async (interaction) => {
   // ---- Autocomplétion du champ "jeu" ----
   if (interaction.isAutocomplete()) {
     const allowedGames = loadAllowedGames();
@@ -135,9 +144,14 @@ client.on("interactionCreate", async (interaction) => {
       .filter((name) => name.toLowerCase().includes(focusedValue))
       .slice(0, 25); // Discord limite à 25 suggestions max
 
-    await interaction.respond(
-      choices.map((name) => ({ name, value: name }))
-    );
+    // Discord exige AU MOINS une suggestion : une réponse vide provoque
+    // une erreur 400 (et fait planter le bot sur Node récent).
+    if (choices.length === 0) {
+      await interaction.respond([{ name: "Aucun jeu trouvé", value: "" }]);
+      return;
+    }
+
+    await interaction.respond(choices.map((name) => ({ name, value: name })));
     return;
   }
 
@@ -146,19 +160,34 @@ client.on("interactionCreate", async (interaction) => {
   const data = loadData();
   const allowedGames = loadAllowedGames();
 
+  const jeuRaw = interaction.options.getString("jeu") || "";
+  const jeu = normalizeGameName(jeuRaw);
+
+  // Cas "Aucun jeu trouvé" renvoyé par l'autocomplétion (valeur vide)
+  if (
+    !jeu &&
+    ["note", "moyenne", "publier", "autoriser-jeu"].includes(
+      interaction.commandName
+    )
+  ) {
+    await interaction.reply({
+      content: "Aucun jeu ne correspond à ta recherche.",
+      ephemeral: true,
+    });
+    return;
+  }
+
   // ---- /note ----
   if (interaction.commandName === "note") {
-    const jeuRaw = interaction.options.getString("jeu");
-    const jeu = normalizeGameName(jeuRaw);
-    const note = interaction.options.getNumber("note");
-
     if (!allowedGames[jeu]) {
       await interaction.reply({
-        content: `❌ **${jeuRaw}** n'est pas encore ouvert au vote. Digo doit d'abord l'autoriser avec \`/autoriser-jeu\`.`,
+        content: `❌ **${jeuRaw}** n'est pas encore ouvert au vote. Digo doit d'abord l'autoriser avec \ `/autoriser-jeu\`.`,
         ephemeral: true,
       });
       return;
     }
+
+    const note = interaction.options.getNumber("note");
 
     if (!data[jeu]) data[jeu] = {};
     data[jeu][interaction.user.id] = note;
@@ -170,15 +199,13 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply({
       content: `✅ Ta note de **${note}/10** pour **${jeuRaw}** a été enregistrée !\nMoyenne actuelle : **${moyenne.toFixed(
         1
-      )}/10** (${nbVotes} vote${nbVotes > 1 ? "s" : ""})`,
+      )}/10** (${formatVotes(nbVotes)})`,
       ephemeral: true,
     });
   }
 
   // ---- /moyenne ----
   if (interaction.commandName === "moyenne") {
-    const jeuRaw = interaction.options.getString("jeu");
-    const jeu = normalizeGameName(jeuRaw);
     const gameData = data[jeu];
 
     if (!gameData || Object.keys(gameData).length === 0) {
@@ -194,7 +221,7 @@ client.on("interactionCreate", async (interaction) => {
     await interaction.reply(
       `🎮 **${jeuRaw}** — Moyenne communauté : **${moyenne.toFixed(
         1
-      )}/10** (${nbVotes} vote${nbVotes > 1 ? "s" : ""})`
+      )}/10** (${formatVotes(nbVotes)})`
     );
   }
 
@@ -215,24 +242,31 @@ client.on("interactionCreate", async (interaction) => {
       .sort((a, b) => b.moyenne - a.moyenne)
       .map(
         (l, i) =>
-          `**${i + 1}.** ${l.jeu} — ${l.moyenne.toFixed(1)}/10 (${l.votes} vote${
-            l.votes > 1 ? "s" : ""
-          })`
+          `**${i + 1}.** ${l.jeu} — ${l.moyenne.toFixed(1)}/10 (${formatVotes(
+            l.votes
+          )})`
       )
       .join("\n");
 
     const embed = new EmbedBuilder()
       .setTitle("🏆 Classement — La Digo Note")
       .setDescription(lignes)
-      .setColor(0x1a1a1a);
+      .setColor(0xffd700); // couleur dorée visible (0x1a1a1a était quasi invisible)
 
     await interaction.reply({ embeds: [embed] });
   }
 
   // ---- /publier ----
   if (interaction.commandName === "publier") {
-    const jeuRaw = interaction.options.getString("jeu");
-    const jeu = normalizeGameName(jeuRaw);
+    // Réservé à Digo si DIGO_ID est défini dans .env
+    if (DIGO_ID && interaction.user.id !== DIGO_ID) {
+      await interaction.reply({
+        content: "🔒 Cette commande est réservée à Digo.",
+        ephemeral: true,
+      });
+      return;
+    }
+
     const gameData = data[jeu];
     const gameInfo = allowedGames[jeu];
 
@@ -249,14 +283,24 @@ client.on("interactionCreate", async (interaction) => {
     const channelId = process.env.CLASSEMENT_CHANNEL_ID;
     const channel = channelId
       ? await client.channels.fetch(channelId).catch(() => null)
-      : interaction.channel;
+      : interaction.inGuild()
+        ? interaction.channel
+        : null;
+
+    if (!channel || !channel.isSendable()) {
+      await interaction.reply({
+        content: "Impossible de trouver le salon de classement.",
+        ephemeral: true,
+      });
+      return;
+    }
 
     const embed = new EmbedBuilder()
       .setTitle(`📊 La Digo Note — ${gameInfo ? gameInfo.name : jeuRaw}`)
       .setDescription(
         `Moyenne communauté finale : **${moyenne.toFixed(
           1
-        )}/10**\n${nbVotes} vote${nbVotes > 1 ? "s" : ""} au total`
+        )}/10**\n${formatVotes(nbVotes)} au total`
       )
       .setColor(0xffd700);
 
@@ -264,25 +308,39 @@ client.on("interactionCreate", async (interaction) => {
       embed.setImage(gameInfo.image);
     }
 
-    if (channel) {
-      await channel.send({ embeds: [embed] });
-      await interaction.reply({
-        content: `Publié dans ${channel}.`,
-        ephemeral: true,
-      });
-    } else {
-      await interaction.reply({
-        content: "Impossible de trouver le salon de classement.",
-        ephemeral: true,
-      });
-    }
+    await channel.send({ embeds: [embed] });
+    await interaction.reply({
+      content: `Publié dans ${channel}.`,
+      ephemeral: true,
+    });
   }
 
   // ---- /autoriser-jeu ----
   if (interaction.commandName === "autoriser-jeu") {
-    const jeuRaw = interaction.options.getString("jeu");
-    const jeu = normalizeGameName(jeuRaw);
+    // Réservé à Digo si DIGO_ID est défini dans .env
+    // (sinon, la commande est déjà limitée aux admins par setDefaultMemberPermissions)
+    if (DIGO_ID && interaction.user.id !== DIGO_ID) {
+      await interaction.reply({
+        content: "🔒 Cette commande est réservée à Digo.",
+        ephemeral: true,
+      });
+      return;
+    }
+
     const image = interaction.options.getString("image") || null;
+
+    // Vérifie que l'URL est valide, sinon l'image de l'embed cassera l'affichage
+    if (image) {
+      try {
+        new URL(image);
+      } catch {
+        await interaction.reply({
+          content: "❌ L'URL de l'image n'est pas valide.",
+          ephemeral: true,
+        });
+        return;
+      }
+    }
 
     allowedGames[jeu] = { name: jeuRaw, image }; // nom "propre" + image éventuelle
     saveAllowedGames(allowedGames);
@@ -313,6 +371,13 @@ client.on("interactionCreate", async (interaction) => {
 
 // ---------- Enregistrement des commandes puis connexion ----------
 async function main() {
+  if (!process.env.DISCORD_TOKEN || !process.env.CLIENT_ID) {
+    console.error(
+      "❌ DISCORD_TOKEN et CLIENT_ID doivent être définis dans le fichier .env (voir .env.example)."
+    );
+    process.exit(1);
+  }
+
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
   console.log("Enregistrement des commandes slash...");
@@ -334,7 +399,15 @@ async function main() {
     console.log("Commandes enregistrées globalement (jusqu'à 1h de délai).");
   }
 
-  client.login(process.env.DISCORD_TOKEN);
+  await client.login(process.env.DISCORD_TOKEN);
 }
 
-main();
+// Affiche proprement les erreurs au lieu de faire planter le bot
+process.on("unhandledRejection", (err) => {
+  console.error("Erreur non gérée :", err);
+});
+
+main().catch((err) => {
+  console.error("❌ Impossible de démarrer le bot :", err.message || err);
+  process.exit(1);
+});
