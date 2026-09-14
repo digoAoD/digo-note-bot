@@ -181,8 +181,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.commandName === "note") {
     if (!allowedGames[jeu]) {
       await interaction.reply({
-        content: `❌ **${jeuRaw}** n'est pas encore ouvert au vote. Digo doit d'abord l'autoriser avec \ `/autoriser-jeu\`.`,
-        ephemeral: true,
+            content: `❌ **${jeuRaw}** n'est pas encore ouvert au vote. Digo doit d'abord l'autoriser avec **/autoriser-jeu**.`,
       });
       return;
     }
