@@ -17,7 +17,10 @@ const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 
-const DATA_DIR = process.env.DATA_DIR || __dirname;
+// Sur Railway, RAILWAY_VOLUME_MOUNT_PATH est défini automatiquement quand un
+// Volume est attaché au service -> les données survivent aux déploiements.
+const DATA_DIR =
+  process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || __dirname;
 const DATA_FILE = path.join(DATA_DIR, "notes.json");
 const ALLOWED_GAMES_FILE = path.join(DATA_DIR, "jeux-autorises.json");
 
