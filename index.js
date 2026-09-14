@@ -17,8 +17,9 @@ const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 
-const DATA_FILE = path.join(__dirname, "notes.json");
-const ALLOWED_GAMES_FILE = path.join(__dirname, "jeux-autorises.json");
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+const DATA_FILE = path.join(DATA_DIR, "notes.json");
+const ALLOWED_GAMES_FILE = path.join(DATA_DIR, "jeux-autorises.json");
 
 // ID utilisateur de Digo (optionnel mais recommandé) :
 // si défini dans .env, /publier et /autoriser-jeu sont réservés à Digo.
@@ -134,24 +135,39 @@ client.once(Events.ClientReady, () => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  // ---- Autocomplétion du champ "jeu" ----
+  // ---- Autocomplétion du champ "jeu" : propose uniquement les jeux autorisés ----
   if (interaction.isAutocomplete()) {
+    const focused = interaction.options.getFocused();
+    console.log(`[autocomplete] recherche : "${focused}"`);
+
     const allowedGames = loadAllowedGames();
-    const focusedValue = interaction.options.getFocused().toLowerCase();
+    const names = Object.values(allowedGames).map((g) => g.name);
 
-    const choices = Object.values(allowedGames)
-      .map((g) => g.name)
-      .filter((name) => name.toLowerCase().includes(focusedValue))
-      .slice(0, 25); // Discord limite à 25 suggestions max
-
-    // Discord exige AU MOINS une suggestion : une réponse vide provoque
-    // une erreur 400 (et fait planter le bot sur Node récent).
-    if (choices.length === 0) {
-      await interaction.respond([{ name: "Aucun jeu trouvé", value: "" }]);
-      return;
+    let response;
+    if (names.length === 0) {
+      // Discord exige AU MOINS une suggestion
+      response = [
+        {
+          name: "Aucun jeu autorisé — Digo doit utiliser /autoriser-jeu",
+          value: "",
+        },
+      ];
+    } else {
+      const choices = names
+        .filter((name) => name.toLowerCase().includes(focused.toLowerCase()))
+        .slice(0, 25); // Discord limite à 25 suggestions max
+      response =
+        choices.length > 0
+          ? choices.map((name) => ({ name, value: name }))
+          : [{ name: "Aucun jeu trouvé", value: "" }];
     }
 
-    await interaction.respond(choices.map((name) => ({ name, value: name })));
+    try {
+      await interaction.respond(response);
+      console.log(`[autocomplete] ${response.length} suggestion(s) envoyée(s)`);
+    } catch (err) {
+      console.error("[autocomplete] erreur :", err.message || err);
+    }
     return;
   }
 
@@ -163,15 +179,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
   const jeuRaw = interaction.options.getString("jeu") || "";
   const jeu = normalizeGameName(jeuRaw);
 
-  // Cas "Aucun jeu trouvé" renvoyé par l'autocomplétion (valeur vide)
+  // Cas "Aucun jeu" renvoyé par l'autocomplétion (valeur vide)
   if (
     !jeu &&
     ["note", "moyenne", "publier", "autoriser-jeu"].includes(
       interaction.commandName
     )
   ) {
+    const aucunAutorise = Object.keys(allowedGames).length === 0;
     await interaction.reply({
-      content: "Aucun jeu ne correspond à ta recherche.",
+      content: aucunAutorise
+        ? "⚠️ Aucun jeu n'est encore autorisé. Digo doit d'abord en ouvrir un avec `/autoriser-jeu`."
+        : "Aucun jeu ne correspond à ta recherche.",
       ephemeral: true,
     });
     return;
@@ -181,7 +200,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (interaction.commandName === "note") {
     if (!allowedGames[jeu]) {
       await interaction.reply({
-            content: `❌ **${jeuRaw}** n'est pas encore ouvert au vote. Digo doit d'abord l'autoriser avec **/autoriser-jeu**.`,
+        content: `❌ **${jeuRaw}** n'est pas encore ouvert au vote. Digo doit d'abord l'autoriser avec \`/autoriser-jeu\`.`,
+        ephemeral: true,
       });
       return;
     }
@@ -379,6 +399,7 @@ async function main() {
 
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
+  console.log(`Données stockées dans : ${DATA_DIR}`);
   console.log("Enregistrement des commandes slash...");
   if (process.env.GUILD_ID) {
     // Enregistrement sur un seul serveur : instantané, idéal pour tester
