@@ -147,6 +147,18 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName("supprimer-jeu")
+    .setDescription("(Digo) Retire un jeu de la liste des jeux votables")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption((opt) =>
+      opt
+        .setName("jeu")
+        .setDescription("Nom du jeu")
+        .setRequired(true)
+        .setAutocomplete(true)
+    ),
+
+  new SlashCommandBuilder()
     .setName("jeux-autorises")
     .setDescription("Affiche la liste des jeux actuellement notables"),
 ].map((c) => c.toJSON());
@@ -206,9 +218,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
   // Cas "Aucun jeu" renvoyé par l'autocomplétion (valeur vide)
   if (
     !jeu &&
-    ["note", "moyenne", "publier", "autoriser-jeu"].includes(
-      interaction.commandName
-    )
+    [
+      "note",
+      "moyenne",
+      "publier",
+      "retirer-note",
+      "supprimer-jeu",
+      "autoriser-jeu",
+    ].includes(interaction.commandName)
   ) {
     const aucunAutorise = Object.keys(allowedGames).length === 0;
     await interaction.reply({
@@ -225,6 +242,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (!allowedGames[jeu]) {
       await interaction.reply({
         content: `❌ **${jeuRaw}** n'est pas encore ouvert au vote. Digo doit d'abord l'autoriser avec \`/autoriser-jeu\`.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // 1 seul vote valide par personne et par jeu :
+    // pour revoter, il faut d'abord retirer son vote (/retirer-note)
+    if (data[jeu] && data[jeu][interaction.user.id] !== undefined) {
+      await interaction.reply({
+        content: `❌ Tu as déjà un vote valide pour **${jeuRaw}** (**${data[
+          jeu
+        ][interaction.user.id]}/10**).\nUtilise d'abord **/retirer-note** pour retirer ton vote, tu pourras ensuite revoter.`,
         ephemeral: true,
       });
       return;
@@ -469,6 +498,40 @@ client.on(Events.InteractionCreate, async (interaction) => {
       content: `✅ **${jeuRaw}** est maintenant ouvert au vote avec \`/note\`.${
         image ? "\nImage enregistrée." : ""
       }`,
+      ephemeral: true,
+    });
+  }
+
+  // ---- /supprimer-jeu ----
+  if (interaction.commandName === "supprimer-jeu") {
+    // Réservé à Digo si DIGO_ID est défini dans .env
+    // (sinon, la commande est déjà limitée aux admins par setDefaultMemberPermissions)
+    if (DIGO_ID && interaction.user.id !== DIGO_ID) {
+      await interaction.reply({
+        content: "🔒 Cette commande est réservée à Digo.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (!allowedGames[jeu]) {
+      await interaction.reply({
+        content: `**${jeuRaw}** n'est pas dans la liste des jeux autorisés.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    delete allowedGames[jeu];
+    saveAllowedGames(allowedGames);
+
+    const aDesNotes =
+      data[jeu] && Object.keys(data[jeu]).length > 0
+        ? "\nLes notes déjà enregistrées restent dans le classement."
+        : "";
+
+    await interaction.reply({
+      content: `🚫 **${jeuRaw}** n'est plus ouvert au vote.${aDesNotes}`,
       ephemeral: true,
     });
   }
