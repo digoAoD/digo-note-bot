@@ -62,6 +62,30 @@ function formatVotes(nb) {
   return `${nb} vote${nb > 1 ? "s" : ""}`;
 }
 
+// ---------- Tableau permanent des moyennes (dashboard) ----------
+const DASHBOARD_FILE = path.join(DATA_DIR, "dashboard.json");
+
+function loadDashboard() {
+  if (!fs.existsSync(DASHBOARD_FILE)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(DASHBOARD_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function saveDashboard(info) {
+  fs.writeFileSync(DASHBOARD_FILE, JSON.stringify(info, null, 2));
+}
+
+// Petit carré de couleur selon la moyenne : vert = bien, rouge = mal
+function scoreColor(moyenne) {
+  if (moyenne >= 8) return "🟩"; // 8/10 et +
+  if (moyenne >= 6) return "🟨"; // 6 à 8
+  if (moyenne >= 4) return "🟧"; // 4 à 6
+  return "🟥"; // moins de 4
+}
+
 // ---------- Commandes ----------
 const commands = [
   new SlashCommandBuilder()
@@ -166,8 +190,70 @@ const commands = [
 // ---------- Client ----------
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+// Met à jour le tableau permanent des moyennes dans le salon configuré
+// (variable DASHBOARD_CHANNEL_ID). Sans cette variable : rien n'est fait.
+async function updateDashboard() {
+  const channelId = process.env.DASHBOARD_CHANNEL_ID;
+  if (!channelId) return;
+
+  let channel;
+  try {
+    channel = await client.channels.fetch(channelId);
+  } catch {
+    return;
+  }
+  if (!channel || !channel.isSendable()) return;
+
+  const data = loadData();
+  const autorises = loadAllowedGames();
+
+  const tous = Object.keys(data)
+    .filter((j) => Object.keys(data[j]).length > 0)
+    .map((j) => ({
+      nom: autorises[j]?.name || j, // nom "propre" si le jeu est autorisé
+      moyenne: getAverage(data[j]),
+      votes: Object.keys(data[j]).length,
+    }))
+    .sort((a, b) => b.moyenne - a.moyenne);
+
+  const affiches = tous.slice(0, 80); // un embed a une taille limitée
+  const lignes = affiches
+    .map(
+      (l) =>
+        `${scoreColor(l.moyenne)} ${l.nom.padEnd(28)} ${l.moyenne.toFixed(1)}/10 (${formatVotes(l.votes)})`
+    )
+    .join("\n");
+
+  const extra =
+    tous.length > 80 ? `\n… et ${tous.length - 80} autre(s) jeu(x)` : "";
+  const tableau = lignes
+    ? "```\n" + lignes + extra + "\n```"
+    : "_Aucun jeu noté pour l'instant._";
+
+  const embed = new EmbedBuilder()
+    .setTitle("📊 Tableau des moyennes — La Digo Note")
+    .setDescription(`${tableau}\n🟩 8/10+ · 🟨 6–8 · 🟧 4–6 · 🟥 <4`)
+    .setColor(0x57f287)
+    .setTimestamp();
+
+  // On édite le message existant s'il est toujours là, sinon on en envoie un nouveau
+  const dash = loadDashboard();
+  if (dash && dash.channelId === channelId) {
+    try {
+      const message = await channel.messages.fetch(dash.messageId);
+      await message.edit({ embeds: [embed] });
+      return;
+    } catch {
+      // message supprimé : on repart d'un message neuf
+    }
+  }
+  const message = await channel.send({ embeds: [embed] });
+  saveDashboard({ channelId, messageId: message.id });
+}
+
 client.once(Events.ClientReady, () => {
   console.log(`Connecté en tant que ${client.user.username}`);
+  updateDashboard().catch((err) => console.error("Dashboard :", err));
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -264,6 +350,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (!data[jeu]) data[jeu] = {};
     data[jeu][interaction.user.id] = note;
     saveData(data);
+    updateDashboard().catch((err) => console.error("Dashboard :", err));
 
     const moyenne = getAverage(data[jeu]);
     const nbVotes = Object.keys(data[jeu]).length;
@@ -329,6 +416,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       delete data[jeu]; // plus aucune note : on retire le jeu du fichier
     }
     saveData(data);
+    updateDashboard().catch((err) => console.error("Dashboard :", err));
 
     const quoi =
       cible.id === interaction.user.id
@@ -382,27 +470,46 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    const lignes = jeux
+    const top10 = jeux
       .map((jeu) => ({
-        jeu,
+        nom: allowedGames[jeu]?.name || jeu,
         moyenne: getAverage(data[jeu]),
         votes: Object.keys(data[jeu]).length,
       }))
       .sort((a, b) => b.moyenne - a.moyenne)
+      .slice(0, 10) // seulement les 10 premiers
       .map(
         (l, i) =>
-          `**${i + 1}.** ${l.jeu} — ${l.moyenne.toFixed(1)}/10 (${formatVotes(
-            l.votes
-          )})`
+          `**${i + 1}.** ${scoreColor(l.moyenne)} ${l.nom} — ${l.moyenne.toFixed(
+            1
+          )}/10 (${formatVotes(l.votes)})`
       )
       .join("\n");
 
     const embed = new EmbedBuilder()
-      .setTitle("🏆 Classement — La Digo Note")
-      .setDescription(lignes)
-      .setColor(0xffd700); // couleur dorée visible (0x1a1a1a était quasi invisible)
+      .setTitle("🏆 Top 10 — La Digo Note")
+      .setDescription(top10)
+      .setColor(0xffd700);
 
-    await interaction.reply({ embeds: [embed] });
+    // Fil privé : le classement n'est visible que par celui qui l'a demandé
+    if (interaction.channel?.createPrivateThread) {
+      try {
+        const fil = await interaction.channel.createPrivateThread({
+          name: "Top 10 — La Digo Note",
+          autoArchiveDuration: 60, // le fil se ferme tout seul après 1 h
+        });
+        await fil.send({ embeds: [embed] });
+        await interaction.reply({
+          content:
+            "🔒 Classement envoyé dans un fil privé (visible uniquement par toi).",
+          ephemeral: true,
+        });
+        return;
+      } catch {
+        // droits insuffisants pour créer un fil : on répond en privé dans le salon
+      }
+    }
+    await interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
   // ---- /publier ----
@@ -476,7 +583,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    const image = interaction.options.getString("image") || null;
+    // Image : l'URL donnée dans l'option, ou une image jointe directement
+    // à la commande (glisser-déposer dans le champ de message)
+    const image =
+      interaction.options.getString("image") ||
+      interaction.files?.first()?.url ||
+      null;
 
     // Vérifie que l'URL est valide, sinon l'image de l'embed cassera l'affichage
     if (image) {
