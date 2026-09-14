@@ -55,7 +55,11 @@ const commands = [
     .setName("note")
     .setDescription("Donne ta note pour un jeu (0 à 10)")
     .addStringOption((opt) =>
-      opt.setName("jeu").setDescription("Nom du jeu").setRequired(true)
+      opt
+        .setName("jeu")
+        .setDescription("Nom du jeu")
+        .setRequired(true)
+        .setAutocomplete(true)
     )
     .addNumberOption((opt) =>
       opt
@@ -70,7 +74,11 @@ const commands = [
     .setName("moyenne")
     .setDescription("Affiche la moyenne communautaire d'un jeu")
     .addStringOption((opt) =>
-      opt.setName("jeu").setDescription("Nom du jeu").setRequired(true)
+      opt
+        .setName("jeu")
+        .setDescription("Nom du jeu")
+        .setRequired(true)
+        .setAutocomplete(true)
     ),
 
   new SlashCommandBuilder()
@@ -80,15 +88,19 @@ const commands = [
   new SlashCommandBuilder()
     .setName("publier")
     .setDescription(
-      "(Diego) Publie la moyenne finale d'un jeu dans le salon classement"
+      "(Digo) Publie la moyenne finale d'un jeu dans le salon classement"
     )
     .addStringOption((opt) =>
-      opt.setName("jeu").setDescription("Nom du jeu").setRequired(true)
+      opt
+        .setName("jeu")
+        .setDescription("Nom du jeu")
+        .setRequired(true)
+        .setAutocomplete(true)
     ),
 
   new SlashCommandBuilder()
     .setName("autoriser-jeu")
-    .setDescription("(Diego) Autorise un jeu à être noté par la communauté")
+    .setDescription("(Digo) Autorise un jeu à être noté par la communauté")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addStringOption((opt) =>
       opt.setName("jeu").setDescription("Nom du jeu").setRequired(true)
@@ -113,6 +125,22 @@ client.once("ready", () => {
 });
 
 client.on("interactionCreate", async (interaction) => {
+  // ---- Autocomplétion du champ "jeu" ----
+  if (interaction.isAutocomplete()) {
+    const allowedGames = loadAllowedGames();
+    const focusedValue = interaction.options.getFocused().toLowerCase();
+
+    const choices = Object.values(allowedGames)
+      .map((g) => g.name)
+      .filter((name) => name.toLowerCase().includes(focusedValue))
+      .slice(0, 25); // Discord limite à 25 suggestions max
+
+    await interaction.respond(
+      choices.map((name) => ({ name, value: name }))
+    );
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const data = loadData();
@@ -126,7 +154,7 @@ client.on("interactionCreate", async (interaction) => {
 
     if (!allowedGames[jeu]) {
       await interaction.reply({
-        content: `❌ **${jeuRaw}** n'est pas encore ouvert au vote. Diego doit d'abord l'autoriser avec \`/autoriser-jeu\`.`,
+        content: `❌ **${jeuRaw}** n'est pas encore ouvert au vote. Digo doit d'abord l'autoriser avec \`/autoriser-jeu\`.`,
         ephemeral: true,
       });
       return;
@@ -272,7 +300,7 @@ client.on("interactionCreate", async (interaction) => {
     const jeux = Object.values(allowedGames);
     if (jeux.length === 0) {
       await interaction.reply(
-        "Aucun jeu n'est encore ouvert au vote. Diego doit en autoriser un avec `/autoriser-jeu`."
+        "Aucun jeu n'est encore ouvert au vote. Digo doit en autoriser un avec `/autoriser-jeu`."
       );
       return;
     }
