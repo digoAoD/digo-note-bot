@@ -95,6 +95,27 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName("retirer-note")
+    .setDescription(
+      "Retire une note : la tienne, ou celle d'un membre (Digo uniquement)"
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName("jeu")
+        .setDescription("Nom du jeu")
+        .setRequired(true)
+        .setAutocomplete(true)
+    )
+    .addUserOption((opt) =>
+      opt
+        .setName("utilisateur")
+        .setDescription(
+          "(Digo) Membre dont on retire la note — vide = ta propre note"
+        )
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
     .setName("classement")
     .setDescription("Affiche le classement de tous les jeux notés"),
 
@@ -217,13 +238,88 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     const moyenne = getAverage(data[jeu]);
     const nbVotes = Object.keys(data[jeu]).length;
+    const gameInfo = allowedGames[jeu];
+    const pseudo = interaction.member?.nickname || interaction.user.username;
 
-    await interaction.reply({
-      content: `✅ Ta note de **${note}/10** pour **${jeuRaw}** a été enregistrée !\nMoyenne actuelle : **${moyenne.toFixed(
-        1
-      )}/10** (${formatVotes(nbVotes)})`,
-      ephemeral: true,
-    });
+    // Affichage PUBLIC : nom du jeu, pseudo du votant, sa note + jaquette
+    const embed = new EmbedBuilder()
+      .setTitle(`🎮 ${gameInfo ? gameInfo.name : jeuRaw}`)
+      .setDescription(
+        `👤 **${pseudo}** vient de mettre **${note}/10**\nMoyenne actuelle : **${moyenne.toFixed(
+          1
+        )}/10** (${formatVotes(nbVotes)})`
+      )
+      .setColor(0xffd700);
+
+    if (gameInfo && gameInfo.image) {
+      embed.setImage(gameInfo.image);
+    }
+
+    await interaction.reply({ embeds: [embed] });
+  }
+
+  // ---- /retirer-note ----
+  if (interaction.commandName === "retirer-note") {
+    const gameData = data[jeu];
+
+    if (!gameData || Object.keys(gameData).length === 0) {
+      await interaction.reply({
+        content: `Aucune note enregistrée pour **${jeuRaw}**.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const cible = interaction.options.getUser("utilisateur") || interaction.user;
+
+    // Retirer la note d'un AUTRE membre est réservé à Digo (si DIGO_ID défini)
+    if (
+      cible.id !== interaction.user.id &&
+      (!DIGO_ID || interaction.user.id !== DIGO_ID)
+    ) {
+      await interaction.reply({
+        content:
+          "🔒 Tu ne peux retirer que ta propre note (retirer celle d'un autre est réservé à Digo).",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (gameData[cible.id] === undefined) {
+      await interaction.reply({
+        content: `**${cible.username}** n'a pas de note pour **${jeuRaw}**.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    delete gameData[cible.id];
+
+    const nbRestant = Object.keys(gameData).length;
+    if (nbRestant === 0) {
+      delete data[jeu]; // plus aucune note : on retire le jeu du fichier
+    }
+    saveData(data);
+
+    const quoi =
+      cible.id === interaction.user.id
+        ? `Ta note pour **${jeuRaw}**`
+        : `La note de **${cible.username}** pour **${jeuRaw}**`;
+
+    if (nbRestant === 0) {
+      await interaction.reply({
+        content: `🗑️ ${quoi} a été retirée.\nPlus aucune note pour ce jeu.`,
+        ephemeral: true,
+      });
+    } else {
+      const moyenne = getAverage(gameData);
+      await interaction.reply({
+        content: `🗑️ ${quoi} a été retirée.\nMoyenne actuelle : **${moyenne.toFixed(
+          1
+        )}/10** (${formatVotes(nbRestant)})`,
+        ephemeral: true,
+      });
+    }
   }
 
   // ---- /moyenne ----
@@ -249,7 +345,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
   // ---- /classement ----
   if (interaction.commandName === "classement") {
-    const jeux = Object.keys(data);
+    const jeux = Object.keys(data).filter(
+      (j) => Object.keys(data[j]).length > 0
+    );
     if (jeux.length === 0) {
       await interaction.reply("Aucun jeu noté pour l'instant.");
       return;
